@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="description" content="GEOHUNT — le cache-cache urbain en temps réel. Une zone, deux équipes, deux points d'extraction. Créé par Nolan Lebert." />
+  <title>GEOHUNT — Cache-cache urbain</title>
+  <link
+    rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230f172a'/%3E%3Ccircle cx='32' cy='32' r='15' fill='none' stroke='%23ffffff' stroke-width='2'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23ffffff'/%3E%3Cpath d='M32 8v9M32 47v9M8 32h9M47 32h9' stroke='%23ffffff' stroke-width='2'/%3E%3C/svg%3E"
+  />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            paper: '#ffffff',
+            surface: '#f8fafc',
+            ink: '#0f172a',
+            muted: '#64748b',
+            line: '#e2e8f0',
+            danger: '#b91c1c'
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.9.0/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="style.css?v=2" />
+</head>
+
+<body>
+  <div id="app" class="app">
+    <div id="map-shell" class="map-shell">
+      <div id="map" class="map-canvas" aria-label="Carte 3D du terrain de jeu"></div>
+      <div class="map-fade" aria-hidden="true"></div>
+
+      <div id="map-loading" class="map-loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="mono">CARTE 3D</span>
+      </div>
+
+      <div class="map-credit mono">
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>
+        <span>·</span>
+        <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>
+      </div>
+
+      <div id="pick-banner" class="pick-banner hidden">
+        <i data-lucide="crosshair" aria-hidden="true"></i>
+        <span>Touchez la carte pour placer le centre de la zone.</span>
+        <button id="btn-cancel-pick" class="pick-cancel" type="button">Annuler</button>
+      </div>
+
+      <div class="map-controls">
+        <div class="control-stack">
+          <button id="btn-zoom-in" class="map-control" type="button" aria-label="Zoomer">
+            <i data-lucide="plus" aria-hidden="true"></i>
+          </button>
+          <button id="btn-zoom-out" class="map-control" type="button" aria-label="Dézoomer">
+            <i data-lucide="minus" aria-hidden="true"></i>
+          </button>
+        </div>
+        <button id="btn-locate" class="map-control" type="button" aria-label="Recentrer sur ma position">
+          <i data-lucide="locate-fixed" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+
+    <header class="topbar">
+      <button id="btn-home" class="brand" type="button" aria-label="Accueil GEOHUNT">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-copy">
+          <span class="brand-name">GEOHUNT</span>
+          <span class="brand-credit">PAR NOLAN LEBERT</span>
+        </span>
+      </button>
+
+      <div class="topbar-actions">
+        <button id="btn-room-code" class="room-pill hidden" type="button" aria-label="Copier le code du salon">
+          <span class="room-pill-label">SALON</span>
+          <span id="top-room-code" class="mono">------</span>
+          <i data-lucide="copy" aria-hidden="true"></i>
+        </button>
+        <button id="btn-mode" class="mode-pill" type="button" aria-label="Configurer le temps réel">
+          <span id="mode-dot" class="mode-dot"></span>
+          <span id="mode-label">DÉMO</span>
+        </button>
+        <button id="btn-settings" class="icon-button" type="button" aria-label="Ouvrir les réglages">
+          <i data-lucide="settings" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+
+    <section id="sheet" class="sheet" aria-label="Interface de jeu">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div id="sheet-scroll" class="sheet-scroll">
+
+        <!-- ACCUEIL -->
+        <section id="view-home" class="view is-active">
+          <p class="eyebrow">CACHE-CACHE URBAIN <span>/</span> TEMPS RÉEL</p>
+          <h1 class="display">Le terrain<br />est la carte.</h1>
+          <p class="lead">
+            Une zone, deux équipes, deux points d'extraction. GEOHUNT transforme la ville en terrain de jeu.
+          </p>
+
+          <div class="gps-row" id="gps-row">
+            <span id="gps-dot" class="status-dot is-waiting"></span>
+            <span id="gps-text" class="mono gps-text">ACQUISITION GPS</span>
+            <span id="gps-detail" class="mono gps-detail">—</span>
+            <button id="btn-retry-gps" class="link-button hidden" type="button">Réessayer</button>
+          </div>
+
+          <form id="form-create" class="form-stack" novalidate>
+            <label class="field" for="input-name">
+              <span class="field-label">VOTRE NOM</span>
+              <input id="input-name" class="input" type="text" maxlength="18" autocomplete="nickname" placeholder="Ex. Nolan" spellcheck="false" />
+            </label>
+            <button id="btn-create" class="btn btn-primary btn-full" type="submit">
+              CRÉER UN SALON
+              <i data-lucide="arrow-right" aria-hidden="true"></i>
+            </button>
+          </form>
+
+          <div class="divider"><span>OU REJOINDRE UNE MANCHE</span></div>
+
+          <form id="form-join" class="join-row" novalidate>
+            <input
+              id="input-code"
+              class="input code-input mono"
+              type="text"
+              maxlength="6"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              placeholder="CODE"
+              aria-label="Code du salon à 6 caractères"
+            />
+            <button id="btn-join" class="btn btn-secondary" type="submit">REJOINDRE</button>
+          </form>
+
+          <p id="home-error" class="error-text" role="alert"></p>
+
+          <button id="mode-note" class="mode-note" type="button">
+            <span class="mode-note-dot" id="mode-note-dot"></span>
+            <span id="mode-note-text">Mode démo local — connectez Supabase pour jouer entre appareils.</span>
+            <i data-lucide="arrow-up-right" aria-hidden="true"></i>
+          </button>
+
+          <div class="rules">
+            <div class="rule">
+              <span class="rule-num mono">01</span>
+              <p>Les chercheurs neutralisent les fugitifs en scannant leur QR vie.</p>
+            </div>
+            <div class="rule">
+              <span class="rule-num mono">02</span>
+              <p>Les fugitifs rejoignent un point d'extraction et y restent 5 secondes.</p>
+            </div>
+            <div class="rule">
+              <span class="rule-num mono">03</span>
+              <p>Sortir du cercle élimine immédiatement un fugitif.</p>
+            </div>
+          </div>
+
+          <footer class="credit mono">CONÇU PAR NOLAN LEBERT <span>·</span> MAPLIBRE / TURF / SUPABASE</footer>
+        </section>
+
+        <!-- SALON -->
+        <section id="view-lobby" class="view hidden">
+          <div class="view-head">
+            <div>
+              <p class="eyebrow">SALON PRIVÉ</p>
+              <button id="lobby-code-display" class="code-display mono" type="button" aria-label="Copier le code du salon">
+                <span id="lobby-code">------</span>
+                <i data-lucide="copy" aria-hidden="true"></i>
+              </button>
+            </div>
+            <button id="btn-leave-lobby" class="text-button" type="button">Quitter</button>
+          </div>
+
+          <div class="lobby-meta">
+            <span id="lobby-mode" class="mini-badge">DÉMO LOCALE</span>
+            <span id="lobby-count" class="mono mini-count">0 JOUEUR</span>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-label">VOTRE RÔLE</span>
+              <span class="section-hint">Modifiable avant le lancement</span>
+            </div>
+            <div id="role-switch" class="role-grid">
+              <button class="role-card" type="button" data-role="hunter">
+                <span class="role-icon"><i data-lucide="search" aria-hidden="true"></i></span>
+                <span class="role-copy"><strong>CHERCHEUR</strong><small>Traque et scanne les QR vie</small></span>
+                <i class="role-check" data-lucide="check" aria-hidden="true"></i>
+              </button>
+              <button class="role-card" type="button" data-role="fugitive">
+                <span class="role-icon"><i data-lucide="footprints" aria-hidden="true"></i></span>
+                <span class="role-copy"><strong>FUGITIF</strong><small>Cache-toi dans la zone</small></span>
+                <i class="role-check" data-lucide="check" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-label">JOUEURS</span>
+              <span id="host-hint" class="section-hint"></span>
+            </div>
+            <div id="players-list" class="players-list"></div>
+          </div>
+
+          <div id="host-zone" class="section host-only">
+            <div class="section-head">
+              <span class="section-label">ZONE DE JEU</span>
+              <span class="section-hint">Vous êtes hôte</span>
+            </div>
+
+            <div class="coord-row">
+              <div>
+                <span class="field-label">CENTRE</span>
+                <span id="center-coords" class="mono coord-value">—</span>
+              </div>
+              <div class="coord-actions">
+                <button id="btn-center-me" class="small-button" type="button">
+                  <i data-lucide="locate-fixed" aria-hidden="true"></i> Ma position
+                </button>
+                <button id="btn-center-map" class="small-button" type="button">
+                  <i data-lucide="crosshair" aria-hidden="true"></i> Carte
+                </button>
+              </div>
+            </div>
+
+            <div class="config-block">
+              <span class="field-label">RAYON DE LA ZONE</span>
+              <div id="radius-seg" class="segmented">
+                <button type="button" data-radius="300">300 m</button>
+                <button type="button" data-radius="500">500 m</button>
+                <button type="button" data-radius="800">800 m</button>
+                <button type="button" data-radius="1200">1,2 km</button>
+                <button type="button" data-radius="2000">2 km</button>
+              </div>
+            </div>
+
+            <div class="config-block">
+              <span class="field-label">DURÉE DE CHASSE</span>
+              <div id="duration-seg" class="segmented">
+                <button type="button" data-duration="10">10 min</button>
+                <button type="button" data-duration="15">15 min</button>
+                <button type="button" data-duration="20">20 min</button>
+                <button type="button" data-duration="30">30 min</button>
+              </div>
+            </div>
+
+            <p class="micro-note">
+              <i data-lucide="info" aria-hidden="true"></i>
+              Deux points d'extraction seront tirés au sort dans la zone au lancement.
+            </p>
+
+            <button id="btn-start" class="btn btn-primary btn-full" type="button">
+              LANCER LA MANCHE
+              <i data-lucide="arrow-right" aria-hidden="true"></i>
+            </button>
+            <p id="start-hint" class="hint-text" role="status"></p>
+          </div>
+
+          <div id="guest-zone" class="section guest-only">
+            <div class="section-head">
+              <span class="section-label">ZONE DE JEU</span>
+              <span class="section-hint">Définie par l'hôte</span>
+            </div>
+            <div class="config-summary">
+              <div><span class="field-label">CENTRE</span><span id="guest-center" class="mono coord-value">—</span></div>
+              <div class="summary-grid">
+                <div><span class="field-label">RAYON</span><span id="guest-radius" class="mono coord-value">500 m</span></div>
+                <div><span class="field-label">CHASSE</span><span id="guest-duration" class="mono coord-value">15 min</span></div>
+              </div>
+            </div>
+            <p class="waiting-note"><span class="pulse-dot" aria-hidden="true"></span> En attente du lancement par l'hôte…</p>
+          </div>
+
+          <button id="btn-leave-lobby-bottom" class="btn btn-ghost btn-full" type="button">QUITTER LE SALON</button>
+        </section>
+
+        <!-- PARTIE -->
+        <section id="view-game" class="view hidden">
+          <div class="game-head">
+            <div>
+              <p id="game-phase" class="eyebrow">CACHE INITIALE</p>
+              <div id="game-timer" class="timer mono">00:00</div>
+              <p id="game-timer-label" class="timer-label">TEMPS DE CACHE</p>
+            </div>
+            <div class="game-role-stack">
+              <span id="game-role" class="chip chip-dark">CHERCHEUR</span>
+              <span id="game-count" class="mono mini-count">0 EN JEU</span>
+            </div>
+          </div>
+
+          <div class="game-data">
+            <div class="data-cell">
+              <span class="field-label">POSITION</span>
+              <span id="game-coords" class="mono data-value">—</span>
+              <span id="game-accuracy" class="mono data-sub">± — m</span>
+            </div>
+            <div class="data-cell">
+              <span class="field-label">ZONE</span>
+              <span id="zone-status" class="zone-status">—</span>
+              <span id="zone-detail" class="mono data-sub">—</span>
+            </div>
+          </div>
+
+          <div id="hiding-note" class="notice hidden">
+            <div class="notice-icon"><i data-lucide="timer" aria-hidden="true"></i></div>
+            <div>
+              <strong id="hiding-title">CACHE EN COURS</strong>
+              <p id="hiding-text">Restez dans le cercle. L'extraction ouvre à la fin du chrono.</p>
+            </div>
+          </div>
+
+          <div id="extraction-card" class="extraction-card hidden">
+            <div class="extraction-head">
+              <span><i data-lucide="target" aria-hidden="true"></i> EXTRACTION <span id="extraction-point" class="mono"></span></span>
+              <strong id="extraction-time" class="mono">5.0 s</strong>
+            </div>
+            <div class="progress"><span id="extraction-bar"></span></div>
+            <p>Restez à moins de 10 m du point jusqu'à la fin du décompte.</p>
+          </div>
+
+          <div class="game-actions">
+            <button id="btn-scan" class="btn btn-primary btn-full hunter-only" type="button">
+              SCANNER UN QR VIE
+              <i data-lucide="scan-line" aria-hidden="true"></i>
+            </button>
+            <button id="btn-show-qr" class="btn btn-primary btn-full fugitive-only" type="button">
+              AFFICHER MON QR VIE
+              <i data-lucide="qr-code" aria-hidden="true"></i>
+            </button>
+          </div>
+          <p id="game-hint" class="hint-text"></p>
+
+          <div class="section game-section">
+            <div class="section-head">
+              <span class="section-label">VOTRE ÉQUIPE</span>
+              <span class="section-hint">Positions partagées à votre équipe</span>
+            </div>
+            <div id="team-list" class="team-list"></div>
+          </div>
+
+          <div class="section game-section">
+            <div class="section-head">
+              <span class="section-label">JOURNAL</span>
+              <span class="section-hint">Temps réel</span>
+            </div>
+            <div id="event-log" class="event-log" aria-live="polite"></div>
+          </div>
+
+          <button id="btn-leave-game" class="btn btn-ghost btn-full" type="button">QUITTER LA MANCHE</button>
+        </section>
+
+        <!-- FIN -->
+        <section id="view-end" class="view hidden">
+          <p id="end-kicker" class="eyebrow">FIN DE MANCHE</p>
+          <h2 id="end-title" class="end-title">Manche terminée.</h2>
+          <p id="end-reason" class="lead end-reason"></p>
+
+          <div id="end-stats" class="end-stats"></div>
+
+          <div class="section">
+            <div class="section-head">
+              <span class="section-label">BILAN DES JOUEURS</span>
+              <span id="end-room-label" class="section-hint mono"></span>
+            </div>
+            <div id="end-players" class="end-players"></div>
+          </div>
+
+          <div class="end-actions">
+            <button id="btn-rematch" class="btn btn-primary btn-full host-only" type="button">
+              NOUVELLE MANCHE
+              <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+            </button>
+            <button id="btn-leave-end" class="btn btn-secondary btn-full" type="button">QUITTER LE SALON</button>
+          </div>
+          <p id="end-wait" class="waiting-note guest-only"><span class="pulse-dot" aria-hidden="true"></span> En attente de l'hôte pour relancer…</p>
+
+          <footer class="credit mono">GEOHUNT <span>·</span> CONÇU PAR NOLAN LEBERT</footer>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- NOTIFICATIONS -->
+    <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
+    <!-- CONNEXION -->
+    <div id="loading-overlay" class="loading-overlay hidden" role="status" aria-live="polite">
+      <div class="loading-card">
+        <span class="spinner" aria-hidden="true"></span>
+        <div>
+          <p id="loading-title" class="eyebrow">CONNEXION</p>
+          <p id="loading-sub" class="mono loading-sub">SALON ------</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOCALISATION -->
+    <div id="geo-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="geo-title">
+      <div class="modal-backdrop" data-close="geo-modal"></div>
+      <div class="modal-card">
+        <div class="modal-icon"><i data-lucide="map-pin" aria-hidden="true"></i></div>
+        <p class="eyebrow">GÉOLOCALISATION</p>
+        <h2 id="geo-title" class="modal-title">Le GPS est requis.</h2>
+        <p id="geo-message" class="modal-text">
+          GEOHUNT a besoin de votre position exacte pour placer la zone et vérifier les limites. Autorisez la localisation
+          dans votre navigateur, puis réessayez.
+        </p>
+        <div class="modal-actions">
+          <button id="geo-retry" class="btn btn-primary btn-full" type="button">RÉESSAYER</button>
+          <button class="btn btn-secondary btn-full" data-close="geo-modal" type="button">FERMER</button>
+        </div>
+        <p class="fine-print">La géolocalisation nécessite une origine sécurisée (HTTPS ou localhost).</p>
+      </div>
+    </div>
+
+    <!-- RÉGLAGES -->
+    <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-backdrop" data-close="settings-modal"></div>
+      <div class="modal-card modal-card-wide">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">RÉGLAGES</p>
+            <h2 id="settings-title" class="modal-title">Temps réel</h2>
+          </div>
+          <button class="icon-button" type="button" data-close="settings-modal" aria-label="Fermer les réglages">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="realtime-status">
+          <span id="settings-status-dot" class="status-dot"></span>
+          <div>
+            <strong id="settings-status-title">Mode démo local</strong>
+            <p id="settings-status-text">Les onglets de ce navigateur partagent le salon.</p>
+          </div>
+        </div>
+
+        <p class="modal-text">
+          Pour jouer entre plusieurs téléphones, reliez GEOHUNT à votre projet Supabase. Les positions et les statuts passent
+          par un canal Realtime public ; aucune table n'est nécessaire.
+        </p>
+
+        <form id="form-supabase" class="form-stack" novalidate>
+          <label class="field" for="supabase-url">
+            <span class="field-label">URL DU PROJET SUPABASE</span>
+            <input id="supabase-url" class="input mono" type="url" inputmode="url" placeholder="https://xxxx.supabase.co" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="field" for="supabase-key">
+            <span class="field-label">CLÉ ANON / PUBLISHABLE</span>
+            <input id="supabase-key" class="input mono" type="password" placeholder="Clé publique du projet" autocomplete="off" spellcheck="false" />
+          </label>
+          <p id="settings-error" class="error-text" role="alert"></p>
+          <button class="btn btn-primary btn-full" type="submit">
+            CONNECTER SUPABASE
+            <i data-lucide="arrow-right" aria-hidden="true"></i>
+          </button>
+        </form>
+
+        <div class="divider"><span>OU</span></div>
+        <button id="btn-use-demo" class="btn btn-secondary btn-full" type="button">UTILISER LE MODE DÉMO</button>
+
+        <p class="fine-print">
+          Utilisez uniquement la clé anon/publishable. Ne placez jamais une clé service_role dans une application web.
+          Si l'autorisation Realtime est active sur votre projet, autorisez broadcast et presence pour le rôle anon.
+        </p>
+
+        <div class="about-block">
+          <span class="section-label">À PROPOS</span>
+          <p>GEOHUNT · prototype 1.0 · conçu et développé par <strong>Nolan Lebert</strong>.</p>
+          <p class="mono">MAPLIBRE GL · TURF.JS · SUPABASE REALTIME</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- QR VIE -->
+    <div id="qr-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="qr-title">
+      <div class="modal-backdrop" data-close="qr-modal"></div>
+      <div class="modal-card qr-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">FUGITIF · IDENTITÉ DE VIE</p>
+            <h2 id="qr-title" class="modal-title">Votre QR vie</h2>
+          </div>
+          <button class="icon-button" type="button" data-close="qr-modal" aria-label="Fermer le QR vie">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+        <p class="qr-name mono" id="qr-name">—</p>
+        <div class="qr-frame">
+          <div id="qr-container" class="qr-container"></div>
+        </div>
+        <p class="qr-instruction">Présentez ce code à un chercheur. Un scan vous neutralise immédiatement.</p>
+        <div class="qr-code-line">
+          <span class="field-label">CODE DE SECOURS</span>
+          <strong id="qr-token" class="mono">------</strong>
+        </div>
+        <p class="fine-print">Le code est renouvelé à chaque manche.</p>
+      </div>
+    </div>
+
+    <!-- SCANNER -->
+    <div id="scan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title">
+      <div class="modal-backdrop" data-close="scan-modal"></div>
+      <div class="modal-card modal-card-wide scan-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">CHERCHEUR · VALIDATION DE CIBLE</p>
+            <h2 id="scan-title" class="modal-title">Scanner un QR vie</h2>
+          </div>
+          <button id="scan-close" class="icon-button" type="button" aria-label="Fermer le scanner">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="scanner-frame">
+          <div id="qr-reader" class="qr-reader"></div>
+          <div class="scanner-reticle" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+        <p id="scan-status" class="scanner-status mono">INITIALISATION DE LA CAMÉRA…</p>
+        <p id="scan-result" class="scan-result" role="status"></p>
+
+        <form id="scan-manual-form" class="scan-manual">
+          <label class="field" for="scan-manual-input">
+            <span class="field-label">SAISIE MANUELLE — CODE À 6 CARACTÈRES</span>
+            <div class="join-row">
+              <input id="scan-manual-input" class="input mono code-input" type="text" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="A1B2C3" />
+              <button class="btn btn-secondary" type="submit">VALIDER</button>
+            </div>
+          </label>
+        </form>
+        <p class="fine-print">La caméra nécessite une origine sécurisée (HTTPS ou localhost).</p>
+      </div>
+    </div>
+
+    <!-- CONFIRMATION -->
+    <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-backdrop" data-close="confirm-modal"></div>
+      <div class="modal-card">
+        <p class="eyebrow">CONFIRMATION</p>
+        <h2 id="confirm-title" class="modal-title">Quitter le salon ?</h2>
+        <p id="confirm-message" class="modal-text"></p>
+        <div class="modal-actions">
+          <button id="confirm-accept" class="btn btn-primary btn-full" type="button">CONFIRMER</button>
+          <button class="btn btn-secondary btn-full" data-close="confirm-modal" type="button">ANNULER</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATUT DE JOUEUR -->
+    <div id="status-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="status-title">
+      <div class="modal-backdrop" data-close="status-modal"></div>
+      <div class="modal-card status-card">
+        <div id="status-icon" class="modal-icon modal-icon--danger">
+          <i data-lucide="alert-triangle" aria-hidden="true"></i>
+        </div>
+        <p id="status-kicker" class="eyebrow">STATUT MODIFIÉ</p>
+        <h2 id="status-title" class="modal-title">Éliminé.</h2>
+        <p id="status-message" class="modal-text"></p>
+        <button class="btn btn-secondary btn-full" data-close="status-modal" type="button">CONTINUER EN SPECTATEUR</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="app.js?v=5"></script>
+</body>
+</html>
