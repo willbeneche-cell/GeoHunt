@@ -625,8 +625,7 @@ svg {
 .role-card:focus-visible,
 .segmented button:focus-visible,
 .text-button:focus-visible,
-.code-display:focus-visible,
-.mode-note:focus-visible {
+.code-display:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
@@ -888,48 +887,6 @@ svg {
   letter-spacing: 0.02em;
   color: var(--muted-dim);
   text-align: right;
-}
-
-.mode-note {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  margin-top: 12px;
-  padding: 8px 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--paper);
-  text-align: left;
-  font-size: 9.5px;
-  line-height: 1.45;
-  color: var(--muted);
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.mode-note:hover {
-  border-color: var(--line-strong);
-  background: var(--surface);
-}
-
-.mode-note svg {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  margin-left: auto;
-  color: var(--muted-dim);
-}
-
-.mode-note-dot {
-  width: 5px;
-  height: 5px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--muted-dim);
-}
-
-.mode-note-dot.is-live {
-  background: var(--ink);
 }
 
 .rules {

@@ -190,7 +190,9 @@
     sheet: { collapsed: false, drag: null },
     extraction: { since: null, validated: false },
     present: { lastAt: 0 },
-    timers: { presence: null, join: null, hello: null, tick: null },
+    timers: { presence: null, join: null, hello: null, tick: null, dbPoll: null },
+    dbUnavailable: false,
+    dbBusy: false,
     joinResolver: null,
     joinCode: null,
     joinRejecter: null,
@@ -928,6 +930,7 @@
 
   function broadcastRoomState() {
     if (!state.room || !state.transport) return;
+    persistRoomRecord();
     state.transport.send({ type: 'room-state', room: state.room, players: playersPayload() });
   }
 
@@ -985,6 +988,8 @@
     }
     updateRoomChrome();
     updateModeUi();
+    persistSelfPlayer();
+    startDbPoll();
     addLog('Salon rejoint.');
     publishPresence(true);
     toast(`Salon ${incoming.code} rejoint.`, 'success');
@@ -1006,6 +1011,7 @@
         if (guest) {
           const exists = state.players.has(guest.id);
           state.players.set(guest.id, { ...guest, lastSeen: Date.now() });
+          void dbUpsertPlayer(guest, state.room.code);
           if (!exists) addLog(`${guest.name} a rejoint le salon.`);
           renderLobby();
         }
@@ -1375,10 +1381,279 @@
   }
 
   /* ------------------------------------------------------------------------
+     Salons persistants : tables Supabase rooms / room_players
+     ------------------------------------------------------------------------ */
+
+  const ROOMS_TABLE = 'rooms';
+  const PLAYERS_TABLE = 'room_players';
+  const DB_POLL_MS = 2_500;
+
+  function dbEnabled() {
+    return state.mode === 'supabase' && Boolean(state.config) && !state.dbUnavailable;
+  }
+
+  function dbClient() {
+    if (!dbEnabled()) return null;
+    try { return getSupabaseClient(); } catch { return null; }
+  }
+
+  function dbErrorCode(error) {
+    return String(error?.code || '');
+  }
+
+  function dbTableMissing(error) {
+    return ['42P01', 'PGRST205', 'PGRST204'].includes(dbErrorCode(error))
+      || /does not exist|could not find the table|schema cache/i.test(error?.message || '');
+  }
+
+  function dbErrorMessage(error) {
+    if (dbTableMissing(error)) {
+      return 'Les tables rooms/room_players ne sont pas créées. Exécutez supabase.sql dans l’éditeur SQL Supabase.';
+    }
+    if (/row-level security|permission denied/i.test(error?.message || '')) {
+      return 'RLS Supabase bloque les salons. Exécutez la partie SQL fournie (RLS désactivé).';
+    }
+    return error?.message || 'Erreur de synchronisation du salon.';
+  }
+
+  function reportDbError(error) {
+    if (!error) return;
+    const missing = dbTableMissing(error);
+    if (missing) state.dbUnavailable = true;
+    const message = dbErrorMessage(error);
+    if (state.view === 'home') setHomeError(message);
+    if (missing || state.view !== 'home') toast(message, 'danger', 6_000);
+  }
+
+  function isoDate(value) {
+    return Number.isFinite(value) ? new Date(value).toISOString() : null;
+  }
+
+  function roomToDbRow(room) {
+    const center = room.center && validLngLat(room.center[0], room.center[1]) ? room.center : [null, null];
+    return {
+      code: room.code,
+      host_id: room.hostId,
+      center_lng: center[0],
+      center_lat: center[1],
+      radius: room.radius,
+      duration: room.duration,
+      phase: room.phase,
+      round_number: room.round || 0,
+      starts_at: isoDate(room.startsAt),
+      hide_ends_at: isoDate(room.hideEndsAt),
+      ends_at: isoDate(room.endsAt),
+      extraction: Array.isArray(room.extraction) ? room.extraction : [],
+      ended_reason: room.endedReason || '',
+      ended_at: isoDate(room.endedAt),
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  function roomFromDbRow(row) {
+    if (!row?.code) return null;
+    return normalizeRoom({
+      code: row.code,
+      hostId: row.host_id,
+      center: row.center_lng != null && row.center_lat != null
+        ? [Number(row.center_lng), Number(row.center_lat)]
+        : null,
+      radius: row.radius,
+      duration: row.duration,
+      phase: row.phase,
+      round: row.round_number || 0,
+      startsAt: row.starts_at ? Date.parse(row.starts_at) : null,
+      hideEndsAt: row.hide_ends_at ? Date.parse(row.hide_ends_at) : null,
+      endsAt: row.ends_at ? Date.parse(row.ends_at) : null,
+      extraction: Array.isArray(row.extraction) ? row.extraction : [],
+      endedReason: row.ended_reason || '',
+      endedAt: row.ended_at ? Date.parse(row.ended_at) : null
+    });
+  }
+
+  function playerToDbRow(player, roomCode) {
+    return {
+      id: player.id,
+      room_code: roomCode,
+      name: player.name,
+      role: player.role,
+      status: player.status || 'active',
+      token: player.token || '',
+      lat: Number.isFinite(player.lat) ? player.lat : null,
+      lng: Number.isFinite(player.lng) ? player.lng : null,
+      accuracy: Number.isFinite(player.accuracy) ? player.accuracy : null,
+      out_reason: player.outReason || '',
+      captured_by: player.capturedBy || '',
+      extracted_at: isoDate(player.extractedAt),
+      extracted_point: player.extractedPoint || '',
+      joined_at: isoDate(player.joinedAt) || new Date().toISOString(),
+      updated_at: isoDate(player.updatedAt) || new Date().toISOString(),
+      last_seen: new Date().toISOString()
+    };
+  }
+
+  function playerFromDbRow(row) {
+    if (!row?.id) return null;
+    return normalizePlayer({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      status: row.status,
+      token: row.token || '',
+      lat: row.lat,
+      lng: row.lng,
+      accuracy: row.accuracy,
+      joinedAt: row.joined_at ? Date.parse(row.joined_at) : Date.now(),
+      updatedAt: row.updated_at ? Date.parse(row.updated_at) : 0,
+      outReason: row.out_reason || '',
+      capturedBy: row.captured_by || '',
+      extractedAt: row.extracted_at ? Date.parse(row.extracted_at) : null,
+      extractedPoint: row.extracted_point || ''
+    });
+  }
+
+  async function dbUpsertRoom(room) {
+    const client = dbClient();
+    if (!client || !room) return false;
+    const { error } = await client.from(ROOMS_TABLE).upsert(roomToDbRow(room), { onConflict: 'code' });
+    if (error) { reportDbError(error); return false; }
+    return true;
+  }
+
+  async function dbUpsertPlayer(player, roomCode) {
+    const client = dbClient();
+    if (!client || !player || !roomCode) return false;
+    const { error } = await client.from(PLAYERS_TABLE).upsert(playerToDbRow(player, roomCode), { onConflict: 'id' });
+    if (error) { reportDbError(error); return false; }
+    return true;
+  }
+
+  async function dbDeletePlayer(playerId) {
+    const client = dbClient();
+    if (!client || !playerId) return false;
+    const { error } = await client.from(PLAYERS_TABLE).delete().eq('id', playerId);
+    if (error && !dbTableMissing(error)) reportDbError(error);
+    return !error;
+  }
+
+  async function dbDeleteRoom(code) {
+    const client = dbClient();
+    if (!client || !code) return false;
+    const { error } = await client.from(ROOMS_TABLE).delete().eq('code', code);
+    if (error && !dbTableMissing(error)) reportDbError(error);
+    return !error;
+  }
+
+  async function dbFetchRoom(code) {
+    const client = dbClient();
+    if (!client) return { data: null, error: null };
+    const { data, error } = await client.from(ROOMS_TABLE).select('*').eq('code', code).maybeSingle();
+    return { data, error };
+  }
+
+  async function dbFetchPlayers(code) {
+    const client = dbClient();
+    if (!client) return { data: [], error: null };
+    const { data, error } = await client.from(PLAYERS_TABLE).select('*').eq('room_code', code);
+    return { data: data || [], error };
+  }
+
+  function persistSelfPlayer() {
+    if (!dbEnabled() || !state.room || !self()) return;
+    void dbUpsertPlayer(self(), state.room.code);
+  }
+
+  function persistRoomRecord() {
+    if (!dbEnabled() || !state.room || !isHost()) return;
+    void dbUpsertRoom(state.room);
+  }
+
+  function persistAllPlayers() {
+    if (!dbEnabled() || !state.room) return;
+    const code = state.room.code;
+    for (const player of state.players.values()) void dbUpsertPlayer(player, code);
+  }
+
+  function stopDbPoll() {
+    if (state.timers.dbPoll) clearInterval(state.timers.dbPoll);
+    state.timers.dbPoll = null;
+    state.dbBusy = false;
+  }
+
+  function startDbPoll() {
+    stopDbPoll();
+    if (!dbEnabled() || !state.room) return;
+    state.timers.dbPoll = setInterval(() => {
+      if (!dbEnabled()) { stopDbPoll(); return; }
+      void refreshRoomFromDb();
+    }, DB_POLL_MS);
+    void refreshRoomFromDb();
+  }
+
+  async function refreshRoomFromDb() {
+    if (!dbEnabled() || !state.room || state.dbBusy) return;
+    const code = state.room.code;
+    state.dbBusy = true;
+    try {
+      const [roomResult, playersResult] = await Promise.all([
+        dbFetchRoom(code),
+        dbFetchPlayers(code)
+      ]);
+      if (!state.room || state.room.code !== code) return;
+      if (roomResult.error) { reportDbError(roomResult.error); return; }
+      if (playersResult.error) { reportDbError(playersResult.error); return; }
+
+      const incoming = roomResult.data ? roomFromDbRow(roomResult.data) : null;
+      const players = playersResult.data.map(playerFromDbRow).filter(Boolean);
+      const previousPhase = state.room.phase;
+
+      if (incoming) {
+        if (!isHost()) {
+          state.isHost = incoming.hostId === state.playerId;
+          if (incoming.phase === 'game' && previousPhase !== 'game') {
+            applyStart(incoming, players, { broadcast: false });
+          } else if (incoming.phase === 'end' && previousPhase !== 'end') {
+            state.room = incoming;
+            applyEndState(incoming, players, { announce: true });
+          } else {
+            state.room = incoming;
+            updateRoomChrome();
+            updateZoneOnMap();
+            syncCenterMarker();
+            syncExtractionMarkers();
+            if (state.view === 'lobby') renderLobby();
+          }
+        } else if (incoming.hostId !== state.room.hostId && incoming.hostId !== state.playerId) {
+          state.room.hostId = incoming.hostId;
+          state.isHost = false;
+          updateRoomChrome();
+        }
+      }
+
+      mergePlayers(players, { force: false });
+      const ids = new Set(players.map((player) => player.id));
+      for (const id of [...state.players.keys()]) {
+        if (id !== state.playerId && !ids.has(id)) state.players.delete(id);
+      }
+      ensureHost();
+      updateRoomChrome();
+      refreshHostUi();
+      syncMarkers();
+      if (state.view === 'lobby') renderLobby();
+      if (state.view === 'game') { renderTeam(); updateGameDynamic(); }
+    } catch (error) {
+      reportDbError(error);
+    } finally {
+      state.dbBusy = false;
+    }
+  }
+
+  /* ------------------------------------------------------------------------
      Session : création / connexion / sortie
      ------------------------------------------------------------------------ */
 
   function resetSessionData() {
+    stopDbPoll();
     closeTransport();
     stopWatch();
     stopScanner();
@@ -1394,6 +1669,7 @@
     state.statusModalShownFor = null;
     state.joinCode = null;
     state.hostMissingSince = null;
+    state.dbUnavailable = false;
     state.picking = false;
     document.getElementById('app')?.classList.remove('is-picking');
     el('pick-banner')?.classList.add('hidden');
@@ -1427,6 +1703,7 @@
 
     state.busy = true;
     const code = randomCode();
+    let dbCreated = false;
     showLoading('OUVERTURE DU SALON', `SALON ${code}`);
     try {
       resetSessionData();
@@ -1462,6 +1739,19 @@
         endedAt: null
       };
       state.isHost = true;
+
+      if (state.mode === 'supabase' && !state.dbUnavailable) {
+        const roomSaved = await dbUpsertRoom(state.room);
+        if (roomSaved) {
+          const playerSaved = await dbUpsertPlayer(me, code);
+          if (playerSaved) {
+            dbCreated = true;
+          } else {
+            await dbDeleteRoom(code);
+          }
+        }
+      }
+
       const transport = await openTransport(code);
       state.transport = transport;
       state.transportKind = transport.kind;
@@ -1478,9 +1768,11 @@
       fitZone();
       transport.send({ type: 'room-state', room: state.room, players: playersPayload() });
       transport.updatePresence();
+      if (dbCreated) startDbPoll();
       toast(`Salon ${code} ouvert.`, 'success');
       el('input-code').value = '';
     } catch (error) {
+      if (dbCreated) void dbDeleteRoom(code);
       resetSessionData();
       setHomeError(error?.message || 'Impossible d’ouvrir le salon.');
       toast('Ouverture du salon impossible. Vérifiez la configuration temps réel.', 'danger', 5000);
@@ -1509,6 +1801,8 @@
     if (!ensureGpsForAction()) return;
 
     state.busy = true;
+    let dbJoined = false;
+    let dbPlayerSaved = false;
     showLoading('CONNEXION AU SALON', `SALON ${code}`);
     try {
       resetSessionData();
@@ -1529,6 +1823,42 @@
         accuracy: state.gps?.accuracy
       });
       state.players.set(me.id, me);
+
+      if (state.mode === 'supabase' && !state.dbUnavailable) {
+        const roomResult = await dbFetchRoom(code);
+        if (roomResult.error) {
+          if (dbTableMissing(roomResult.error)) {
+            state.dbUnavailable = true;
+          } else {
+            throw new Error(dbErrorMessage(roomResult.error));
+          }
+        } else if (!roomResult.data) {
+          throw new Error('Aucun salon trouvé avec ce code. Vérifiez le code auprès de l’hôte.');
+        } else {
+          const room = roomFromDbRow(roomResult.data);
+          if (!room) throw new Error('Ce salon est invalide.');
+          if (room.phase !== 'lobby') throw new Error('Une manche est déjà en cours dans ce salon.');
+          const playersResult = await dbFetchPlayers(code);
+          if (playersResult.error) {
+            if (dbTableMissing(playersResult.error)) {
+              state.dbUnavailable = true;
+            } else {
+              throw new Error(dbErrorMessage(playersResult.error));
+            }
+          }
+          if (!state.dbUnavailable) {
+            state.room = room;
+            state.isHost = room.hostId === state.playerId;
+            mergePlayers(playersResult.data.map(playerFromDbRow).filter(Boolean), { force: false });
+            state.players.set(me.id, me);
+            const playerSaved = await dbUpsertPlayer(me, code);
+            if (!playerSaved) throw new Error('Impossible de vous enregistrer dans ce salon.');
+            dbPlayerSaved = true;
+            dbJoined = true;
+          }
+        }
+      }
+
       const transport = await openTransport(code);
       state.transport = transport;
       state.transportKind = transport.kind;
@@ -1536,29 +1866,54 @@
       state.connection = 'connected';
       updateModeUi();
 
-      const joined = new Promise((resolve, reject) => {
-        state.joinResolver = resolve;
-        state.joinRejecter = reject;
-        state.timers.join = setTimeout(() => {
-          reject(new Error('Aucun salon trouvé avec ce code. Vérifiez le code et que l’hôte est en ligne.'));
-        }, 8_000);
+      if (dbJoined) {
         const hello = () => transport.send({
           type: 'hello',
           player: selfPayload(),
           roomCode: code
         });
         hello();
-        state.timers.hello = setInterval(hello, 900);
-      });
+        state.timers.hello = setInterval(hello, 1_200);
+        setTimeout(() => {
+          if (state.timers.hello) clearInterval(state.timers.hello);
+          state.timers.hello = null;
+        }, 5_000);
+        startPresenceLoop();
+        startDbPoll();
+        showView('lobby');
+        renderLobby();
+        updateZoneOnMap();
+        fitZone();
+        updateRoomChrome();
+        addLog('Salon rejoint.');
+        transport.updatePresence();
+        toast(`Salon ${code} rejoint.`, 'success');
+      } else {
+        const joined = new Promise((resolve, reject) => {
+          state.joinResolver = resolve;
+          state.joinRejecter = reject;
+          state.timers.join = setTimeout(() => {
+            reject(new Error('Aucun salon trouvé avec ce code. Vérifiez le code et que l’hôte est en ligne.'));
+          }, 8_000);
+          const hello = () => transport.send({
+            type: 'hello',
+            player: selfPayload(),
+            roomCode: code
+          });
+          hello();
+          state.timers.hello = setInterval(hello, 900);
+        });
 
-      startPresenceLoop();
-      transport.updatePresence();
-      await joined;
+        startPresenceLoop();
+        transport.updatePresence();
+        await joined;
+      }
     } catch (error) {
       if (state.timers.join) clearTimeout(state.timers.join);
       if (state.timers.hello) clearInterval(state.timers.hello);
       state.joinResolver = null;
       state.joinRejecter = null;
+      if (dbPlayerSaved) void dbDeletePlayer(state.playerId);
       resetSessionData();
       showView('home');
       setHomeError(error?.message || 'Impossible de rejoindre le salon.');
@@ -1571,14 +1926,23 @@
 
   function leaveRoom() {
     if (!state.room) return;
-    if (isHost()) {
-      const others = playersArray().filter((player) => player.id !== state.playerId);
+    const code = state.room.code;
+    const wasHost = isHost();
+    const others = playersArray().filter((player) => player.id !== state.playerId);
+    if (wasHost) {
       if (others.length) {
         state.room.hostId = others[0].id;
         state.transport?.send({ type: 'room-state', room: state.room, players: others });
       }
     }
     state.transport?.send({ type: 'leave', playerId: state.playerId });
+    if (state.mode === 'supabase') {
+      void dbDeletePlayer(state.playerId);
+      if (wasHost) {
+        if (others.length) void dbUpsertRoom(state.room);
+        else void dbDeleteRoom(code);
+      }
+    }
     resetSessionData();
     state.role = 'hunter';
     document.body.dataset.role = 'hunter';
@@ -1736,6 +2100,7 @@
       me.updatedAt = Date.now();
     }
     state.isHost = incoming.hostId === state.playerId;
+    if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
     state.logs = [];
     state.extraction = { since: null, validated: false, pointId: null };
     state.endScheduled = false;
@@ -1983,6 +2348,7 @@
     if (meta.reason) player.outReason = meta.reason;
     if (meta.point) player.extractedPoint = meta.point;
     if (status === 'extracted') player.extractedAt = Date.now();
+    if (state.mode === 'supabase' && state.room) void dbUpsertPlayer(player, state.room.code);
 
     const mine = player.id === state.playerId;
     if (mine) {
@@ -2112,6 +2478,7 @@
     mergePlayers(rawPlayers || [], { force: true });
     state.endScheduled = true;
     state.isHost = state.room.hostId === state.playerId;
+    if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
     state.extraction.since = null;
     stopScanner();
     closeModal('scan-modal');
@@ -2185,6 +2552,7 @@
       player.extractedPoint = '';
     }
     state.isHost = state.room.hostId === state.playerId;
+    if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
     state.endScheduled = false;
     state.completionScheduled = false;
     state.announcedChase = false;
@@ -2584,14 +2952,6 @@
           : 'Les onglets de ce navigateur partagent le salon.';
     }
 
-    const noteText = el('mode-note-text');
-    const noteDot = el('mode-note-dot');
-    if (noteText) {
-      noteText.textContent = supabase
-        ? 'Supabase connecté — synchronisation entre appareils.'
-        : 'Mode démo local — connectez Supabase pour jouer entre appareils.';
-    }
-    if (noteDot) noteDot.className = `mode-note-dot${supabase ? ' is-live' : ''}`;
     el('btn-use-demo')?.classList.toggle('hidden', !supabase);
   }
 
@@ -2996,7 +3356,6 @@
     el('btn-home')?.addEventListener('click', requestLeave);
     el('btn-room-code')?.addEventListener('click', copyRoomCode);
     el('lobby-code-display')?.addEventListener('click', copyRoomCode);
-    el('mode-note')?.addEventListener('click', openSettings);
     el('btn-settings')?.addEventListener('click', openSettings);
     el('form-supabase')?.addEventListener('submit', saveSupabaseConfig);
     el('btn-use-demo')?.addEventListener('click', useDemoMode);
@@ -3014,6 +3373,7 @@
       me.role = state.role;
       me.updatedAt = Date.now();
       document.body.dataset.role = state.role;
+      persistSelfPlayer();
       publishPresence(true);
       renderLobby();
     });
