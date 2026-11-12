@@ -188,7 +188,6 @@
     markers: new Map(),
     extractionMarkers: [],
     extractionRevealed: false,
-    radioMarkers: new Map(),
     radio: { index: null },
     centerMarker: null,
     picking: false,
@@ -380,6 +379,29 @@
       } catch { /* ignoré */ }
     }
 
+    if (!map.getSource('gh-radio')) {
+      map.addSource('gh-radio', { type: 'geojson', data: EMPTY_FC });
+    }
+    if (!map.getLayer('gh-radio-fill')) {
+      try {
+        map.addLayer({
+          id: 'gh-radio-fill', type: 'fill', source: 'gh-radio',
+          paint: { 'fill-color': '#0f172a', 'fill-opacity': 0.14 }
+        }, firstSymbol);
+      } catch { /* ignoré */ }
+    }
+    if (!map.getLayer('gh-radio-line')) {
+      try {
+        map.addLayer({
+          id: 'gh-radio-line', type: 'line', source: 'gh-radio',
+          paint: {
+            'line-color': '#0f172a', 'line-width': 1.4, 'line-opacity': 0.5,
+            'line-dasharray': [1.4, 1.1]
+          }
+        }, firstSymbol);
+      } catch { /* ignoré */ }
+    }
+
     if (!map.getSource('gh-zone')) {
       map.addSource('gh-zone', { type: 'geojson', data: EMPTY_FC });
     }
@@ -518,7 +540,7 @@
     if (me && state.room.phase === 'game') {
       for (const player of state.players.values()) {
         if (player.id === me.id) continue;
-        if (player.role !== me.role || player.status !== 'active') continue;
+        if (player.role !== me.role) continue;
         if (!validLngLat(player.lng, player.lat)) continue;
         visible.set(player.id, player);
       }
@@ -542,7 +564,10 @@
       }
       entry.element.classList.toggle('is-out', player.status !== 'active');
       const label = entry.element.querySelector('.gh-label');
-      if (label) label.textContent = player.id === state.playerId ? 'VOUS' : shortName(player.name);
+      if (label) {
+        label.textContent = player.id === state.playerId ? 'VOUS' : shortName(player.name);
+        if (player.status !== 'active') label.textContent += ' · ✕';
+      }
     }
 
     for (const [id, entry] of state.markers) {
@@ -600,7 +625,7 @@
     state.centerMarker = null;
     for (const marker of state.extractionMarkers) marker.remove();
     state.extractionMarkers = [];
-    clearRadioMarkers();
+    clearRadioSignal();
     state.extractionRevealed = false;
     state.radio.index = null;
     el('radio-chip')?.classList.add('hidden');
@@ -745,6 +770,8 @@
 
   function requestPositionSilent() {
     if (!navigator.geolocation || !state.room) return;
+    const me = self();
+    if (me && me.status !== 'active') return;
     navigator.geolocation.getCurrentPosition(
       onGpsSuccess,
       () => { /* le watch reprendra */ },
@@ -753,6 +780,8 @@
   }
 
   function startWatch() {
+    const me = self();
+    if (me && me.status !== 'active') return;
     if (state.watchId != null || !navigator.geolocation || !state.room) return;
     state.watchId = navigator.geolocation.watchPosition(
       onGpsSuccess,
@@ -832,6 +861,7 @@
   function selfPayload() {
     const me = self();
     if (!me) return null;
+    if (me.status !== 'active') return { ...me, lat: null, lng: null };
     if (state.gps) {
       me.lat = state.gps.lat;
       me.lng = state.gps.lng;
@@ -842,6 +872,7 @@
 
   function playersPayload() {
     return playersArray().map((player) => {
+      if (player.status !== 'active') return { ...player, lat: null, lng: null };
       if (player.id === state.playerId && state.gps) {
         return { ...player, lat: state.gps.lat, lng: state.gps.lng, accuracy: state.gps.accuracy };
       }
@@ -864,7 +895,23 @@
         } else {
           me.name = state.name || me.name;
           me.role = state.role;
-          if (force) me.status = incoming.status === 'active' ? 'active' : me.status;
+          const resolved = incoming.status !== 'active';
+          if (force) {
+            me.status = incoming.status;
+          } else if (resolved && me.status === 'active' && state.room?.phase === 'game'
+            && (incoming.updatedAt || 0) >= (me.updatedAt || 0)) {
+            me.status = incoming.status;
+            me.updatedAt = Math.max(me.updatedAt || 0, incoming.updatedAt || 0);
+            me.capturedBy = incoming.capturedBy || me.capturedBy;
+            me.outReason = incoming.outReason || me.outReason;
+            me.extractedAt = incoming.extractedAt || me.extractedAt;
+            me.extractedPoint = incoming.extractedPoint || me.extractedPoint;
+            if (state.view === 'game' && (incoming.status === 'captured' || incoming.status === 'out')) {
+              closeModal('qr-modal');
+              showStatusModal(incoming.status, me);
+            }
+          }
+          if (me.status !== 'active') stopWatch();
           me.lastSeen = Date.now();
         }
         continue;
@@ -875,15 +922,18 @@
         continue;
       }
       const newer = incoming.updatedAt >= existing.updatedAt;
+      const downgrade = incoming.status === 'active' && existing.status !== 'active';
       existing.name = incoming.name;
       existing.role = incoming.role;
       existing.joinedAt = incoming.joinedAt;
       existing.token = incoming.token || existing.token;
-      existing.lat = incoming.lat;
-      existing.lng = incoming.lng;
-      existing.accuracy = incoming.accuracy;
+      if (validLngLat(incoming.lng, incoming.lat)) {
+        existing.lat = incoming.lat;
+        existing.lng = incoming.lng;
+        existing.accuracy = incoming.accuracy;
+      }
       existing.lastSeen = Date.now();
-      if (force || newer) {
+      if (force || (newer && !downgrade)) {
         existing.status = incoming.status;
         existing.updatedAt = incoming.updatedAt;
         existing.outReason = incoming.outReason;
@@ -1490,8 +1540,8 @@
       role: player.role,
       status: player.status || 'active',
       token: player.token || '',
-      lat: Number.isFinite(player.lat) ? player.lat : null,
-      lng: Number.isFinite(player.lng) ? player.lng : null,
+      lat: player.status === 'active' && Number.isFinite(player.lat) ? player.lat : null,
+      lng: player.status === 'active' && Number.isFinite(player.lng) ? player.lng : null,
       accuracy: Number.isFinite(player.accuracy) ? player.accuracy : null,
       out_reason: player.outReason || '',
       captured_by: player.capturedBy || '',
@@ -1569,6 +1619,16 @@
     return { data: data || [], error };
   }
 
+  async function dbFindPlayer(code, { id = '', token = '' } = {}) {
+    const client = dbClient();
+    if (!client) return null;
+    let query = client.from(PLAYERS_TABLE).select('*').eq('room_code', code);
+    query = id ? query.eq('id', id) : query.eq('token', token);
+    const { data } = await query.limit(1);
+    const row = Array.isArray(data) ? data[0] : data;
+    return row ? playerFromDbRow(row) : null;
+  }
+
   function persistSelfPlayer() {
     if (!dbEnabled() || !state.room || !self()) return;
     void dbUpsertPlayer(self(), state.room.code);
@@ -1642,6 +1702,17 @@
       }
 
       mergePlayers(players, { force: false });
+
+      // Une neutralisation connue localement ne doit pas être écrasée par le
+      // battement de cœur « active » du joueur visé : on réaffirme le verdict.
+      if (state.room.phase === 'game') {
+        for (const remote of players) {
+          const local = state.players.get(remote.id);
+          if (!local || local.status === 'active' || remote.status !== 'active') continue;
+          void dbUpsertPlayer(local, code);
+        }
+      }
+
       const ids = new Set(players.map((player) => player.id));
       for (const id of [...state.players.keys()]) {
         if (id !== state.playerId && !ids.has(id)) state.players.delete(id);
@@ -2099,9 +2170,14 @@
     return next < endsAt ? next : null;
   }
 
-  function clearRadioMarkers() {
-    for (const marker of state.radioMarkers.values()) marker.remove();
-    state.radioMarkers.clear();
+  function clearRadioSignal() {
+    const source = state.map?.getSource('gh-radio');
+    if (source) source.setData(EMPTY_FC);
+  }
+
+  function radioSectorRadius() {
+    const base = Number(state.room?.radius) || 500;
+    return Math.max(70, Math.min(150, base * 0.18));
   }
 
   function radioChipText(win, now) {
@@ -2127,46 +2203,38 @@
     }
 
     const map = state.map;
-    if (!map || !win) {
-      clearRadioMarkers();
+    const source = map?.getSource('gh-radio');
+    if (!map || !source) return;
+    if (!win || !window.turf?.circle) {
+      source.setData(EMPTY_FC);
       state.radio.index = null;
       return;
     }
 
-    const wanted = new Map();
+    // Secteur approximatif uniquement : ni nom, ni avatar, ni point GPS précis.
+    const radiusKm = radioSectorRadius() / 1000;
+    const features = [];
     for (const player of state.players.values()) {
       if (player.role !== 'fugitive' || player.status !== 'active') continue;
       if (!validLngLat(player.lng, player.lat)) continue;
-      wanted.set(player.id, player);
+      const sector = turf.circle([player.lng, player.lat], radiusKm, { steps: 64, units: 'kilometers' });
+      sector.properties = { kind: 'radio-sector' };
+      features.push(sector);
     }
+    source.setData({ type: 'FeatureCollection', features });
 
-    for (const [id, player] of wanted) {
-      let marker = state.radioMarkers.get(id);
-      if (!marker) {
-        const element = document.createElement('div');
-        element.className = 'gh-radio-marker';
-        element.innerHTML = '<span class="gh-radio-ring"></span><span class="gh-radio-dot"></span><span class="gh-radio-label"></span>';
-        marker = new maplibregl.Marker({ element, anchor: 'left' })
-          .setLngLat([player.lng, player.lat])
-          .addTo(map);
-        state.radioMarkers.set(id, marker);
-      } else {
-        marker.setLngLat([player.lng, player.lat]);
-      }
-      const tag = marker.getElement()?.querySelector('.gh-radio-label');
-      if (tag) tag.textContent = `SIGNAL · ${shortName(player.name)}`;
-    }
-
-    for (const [id, marker] of [...state.radioMarkers]) {
-      if (wanted.has(id)) continue;
-      marker.remove();
-      state.radioMarkers.delete(id);
+    if (!reducedMotion) {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 380);
+      try {
+        map.setPaintProperty('gh-radio-fill', 'fill-opacity', 0.08 + pulse * 0.1);
+        map.setPaintProperty('gh-radio-line', 'line-opacity', 0.25 + pulse * 0.4);
+      } catch { /* style en cours de chargement */ }
     }
 
     if (state.radio.index !== win.index) {
       state.radio.index = win.index;
-      addLog('Signal radio : position des fugitifs détectée.', 'strong');
-      toast('Signal radio reçu. Position des fugitifs révélée 12 s.', 'info', 4000);
+      addLog('Signal radio : secteur approximatif détecté.', 'strong');
+      toast('Signal radio reçu. Secteur des fugitifs affiché 12 s.', 'info', 4000);
       beep(1040, 0.06);
       setTimeout(() => beep(1320, 0.06), 110);
       vibrate([30, 40, 30]);
@@ -2233,11 +2301,12 @@
     }
     state.isHost = incoming.hostId === state.playerId;
     if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
+    else persistSelfPlayer();
     state.logs = [];
     state.extraction = { since: null, validated: false, pointId: null };
     state.extractionRevealed = false;
     state.radio.index = null;
-    clearRadioMarkers();
+    clearRadioSignal();
     state.endScheduled = false;
     state.completionScheduled = false;
     state.fallbackAnnounce = false;
@@ -2492,6 +2561,10 @@
     if (state.mode === 'supabase' && state.room) void dbUpsertPlayer(player, state.room.code);
 
     const mine = player.id === state.playerId;
+    if (mine && status !== 'active') {
+      stopWatch();
+      closeModal('qr-modal');
+    }
     if (mine) {
       resetExtraction();
       if (status === 'out') {
@@ -2623,7 +2696,7 @@
     state.extraction.since = null;
     state.extractionRevealed = false;
     state.radio.index = null;
-    clearRadioMarkers();
+    clearRadioSignal();
     el('radio-chip')?.classList.add('hidden');
     stopScanner();
     closeModal('scan-modal');
@@ -2703,7 +2776,7 @@
     state.announcedChase = false;
     state.extractionRevealed = false;
     state.radio.index = null;
-    clearRadioMarkers();
+    clearRadioSignal();
     el('radio-chip')?.classList.add('hidden');
     state.logs = [];
     state.extraction = { since: null, validated: false, pointId: null };
@@ -3323,7 +3396,7 @@
     handleScan(text);
   }
 
-  function handleScan(raw) {
+  async function handleScan(raw) {
     const me = self();
     const result = el('scan-result');
     const status = el('scan-status');
@@ -3340,15 +3413,16 @@
       return;
     }
 
-    const value = String(raw || '').trim().toUpperCase();
+    const rawValue = String(raw || '').trim();
+    const value = rawValue.toUpperCase();
     let token = '';
     let claimedRoom = '';
     let claimedPlayer = '';
     if (value.startsWith('GEOHUNT|')) {
-      const parts = value.split('|');
-      claimedRoom = parts[1] || '';
-      claimedPlayer = parts[2] || '';
-      token = parts[3] || '';
+      const parts = rawValue.split('|');
+      claimedRoom = (parts[1] || '').toUpperCase();
+      claimedPlayer = (parts[2] || '').trim();
+      token = (parts[3] || '').toUpperCase();
     } else {
       token = value;
     }
@@ -3359,10 +3433,25 @@
       return;
     }
 
-    let target = claimedPlayer ? state.players.get(claimedPlayer) : null;
-    if (!target) {
-      target = [...state.players.values()].find((player) => player.token === token) || null;
+    const byId = claimedPlayer
+      ? [...state.players.values()].find((player) => player.id === claimedPlayer)
+        || [...state.players.values()].find((player) => player.id.toUpperCase() === claimedPlayer.toUpperCase())
+      : null;
+    let target = byId
+      || [...state.players.values()].find((player) => player.token === token)
+      || null;
+
+    // Repli base de données si la cible ou son code n’est pas encore synchronisé.
+    if ((!target || String(target.token).toUpperCase() !== token) && dbEnabled()) {
+      try {
+        const fresh = await dbFindPlayer(state.room.code, claimedPlayer ? { id: claimedPlayer } : { token });
+        if (fresh) {
+          mergePlayers([fresh]);
+          target = state.players.get(fresh.id) || fresh;
+        }
+      } catch { /* réseau indisponible : on garde le verdict local */ }
     }
+
     if (!target) { fail('QR inconnu ou cible déjà neutralisée.'); return; }
     if (target.id === me.id) { fail('Vous ne pouvez pas scanner votre propre QR.'); return; }
     if (target.role !== 'fugitive') { fail('Cette cible n’est pas un fugitif.'); return; }
@@ -3371,6 +3460,7 @@
 
     transitionPlayer(target.id, 'captured', { by: me.name }, { broadcast: false });
     state.transport?.send({ type: 'capture', targetId: target.id, token, by: me.name });
+    if (isHost()) broadcastRoomState();
     result.textContent = `CIBLE NEUTRALISÉE · ${target.name.toUpperCase()}`;
     result.className = 'scan-result';
     status.textContent = 'QR VIE VALIDÉ';

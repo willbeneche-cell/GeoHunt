@@ -2249,7 +2249,17 @@ body[data-role='fugitive'] .fugitive-only {
 }
 
 .gh-marker.is-out {
-  opacity: 0.38;
+  opacity: 0.42;
+}
+
+.gh-marker.is-out .gh-dot {
+  border-color: var(--muted);
+  background: var(--muted);
+}
+
+.gh-marker.is-out .gh-label {
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .gh-label {
@@ -2304,62 +2314,9 @@ body[data-role='fugitive'] .fugitive-only {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
-.gh-radio-marker {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.gh-radio-dot {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: var(--ink);
-  box-shadow: 0 0 0 1.5px var(--ink), 0 2px 7px rgba(15, 23, 42, 0.34);
-}
-
-.gh-radio-ring {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 13px;
-  height: 13px;
-  margin-top: -6.5px;
-  border: 1.5px solid var(--ink);
-  border-radius: 50%;
-  animation: gh-radio-pulse 1.5s ease-out infinite;
-}
-
-.gh-radio-label {
-  padding: 2px 4px;
-  border-radius: 3px;
-  background: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 7px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
-}
-
-@keyframes gh-radio-pulse {
-  0% { transform: translateY(-50%) scale(1); opacity: 0.9; }
-  75% { transform: translateY(-50%) scale(3.4); opacity: 0; }
-  100% { transform: translateY(-50%) scale(3.4); opacity: 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .gh-radio-ring,
   .radio-chip.is-active svg {
     animation: none;
-  }
-  .gh-radio-ring {
-    opacity: 0.45;
   }
 }
 
