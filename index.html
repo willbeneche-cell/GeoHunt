@@ -41,7 +41,7 @@
   </script>
 
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.9.0/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 
 <body>
@@ -315,6 +315,11 @@
             </div>
           </div>
 
+          <div id="radio-chip" class="radio-chip hidden" aria-live="polite">
+            <i data-lucide="radio" aria-hidden="true"></i>
+            <span id="radio-chip-label" class="mono">PROCHAIN SIGNAL · —</span>
+          </div>
+
           <div id="hiding-note" class="notice hidden">
             <div class="notice-icon"><i data-lucide="timer" aria-hidden="true"></i></div>
             <div>
@@ -583,6 +588,6 @@
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

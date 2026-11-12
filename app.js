@@ -15,6 +15,8 @@
   const HIDE_MS = 60_000;
   const HOLD_MS = 5_000;
   const EXTRACTION_METERS = 10;
+  const RADIO_PING_MS = 12_000;
+  const RADIO_PINGS_PER_ROUND = 5;
   const HEARTBEAT_MS = 2_000;
   const PRESENCE_TTL_MS = 20_000;
   const HOST_GRACE_MS = 5_000;
@@ -185,6 +187,9 @@
     hasFlown: false,
     markers: new Map(),
     extractionMarkers: [],
+    extractionRevealed: false,
+    radioMarkers: new Map(),
+    radio: { index: null },
     centerMarker: null,
     picking: false,
     sheet: { collapsed: false, drag: null },
@@ -574,6 +579,8 @@
     for (const marker of state.extractionMarkers) marker.remove();
     state.extractionMarkers = [];
     if (!map || !state.room || state.room.phase !== 'game') return;
+    // Les points restent invisibles pendant toute la cache initiale.
+    if (Date.now() < (state.room.hideEndsAt || 0)) return;
     const points = state.room.extraction || [];
     points.forEach((point, index) => {
       const element = document.createElement('div');
@@ -593,6 +600,10 @@
     state.centerMarker = null;
     for (const marker of state.extractionMarkers) marker.remove();
     state.extractionMarkers = [];
+    clearRadioMarkers();
+    state.extractionRevealed = false;
+    state.radio.index = null;
+    el('radio-chip')?.classList.add('hidden');
     if (state.mapLoaded) {
       state.map?.getSource('gh-zone')?.setData(EMPTY_FC);
       state.map?.getSource('gh-accuracy')?.setData(EMPTY_FC);
@@ -1663,6 +1674,9 @@
     state.logs = [];
     state.isHost = false;
     state.extraction = { since: null, validated: false };
+    state.extractionRevealed = false;
+    state.radio.index = null;
+    el('radio-chip')?.classList.add('hidden');
     state.endScheduled = false;
     state.announcedChase = false;
     state.lastBeepKey = null;
@@ -2041,6 +2055,124 @@
     }));
   }
 
+  /* Signal radio : toutes les (durée / 5) minutes, la position des fugitifs
+     apparaît brièvement sur la carte des chercheurs. */
+
+  function radioIntervalMs(durationMin) {
+    const total = Math.max(1, Number(durationMin) || 15) * 60_000;
+    return Math.max(60_000, Math.round(total / RADIO_PINGS_PER_ROUND));
+  }
+
+  function radioWindow(now = Date.now()) {
+    const current = state.room;
+    if (!current || current.phase !== 'game') return null;
+    const hideEndsAt = Number(current.hideEndsAt) || 0;
+    const endsAt = Number(current.endsAt) || 0;
+    if (!hideEndsAt || !endsAt || now < hideEndsAt || now >= endsAt) return null;
+    const interval = radioIntervalMs(current.duration);
+    const sinceHide = now - hideEndsAt;
+    const index = Math.floor(sinceHide / interval);
+    if (index < 1) return null;
+    const startsAt = hideEndsAt + index * interval;
+    if (startsAt >= endsAt) return null;
+    const elapsed = now - startsAt;
+    if (elapsed >= RADIO_PING_MS) return null;
+    return {
+      index,
+      interval,
+      startsAt,
+      remaining: Math.max(0, Math.min(RADIO_PING_MS - elapsed, endsAt - now))
+    };
+  }
+
+  function nextRadioAt(now = Date.now()) {
+    const current = state.room;
+    if (!current || current.phase !== 'game') return null;
+    const hideEndsAt = Number(current.hideEndsAt) || 0;
+    const endsAt = Number(current.endsAt) || 0;
+    if (!hideEndsAt || !endsAt) return null;
+    const interval = radioIntervalMs(current.duration);
+    const index = now < hideEndsAt
+      ? 1
+      : Math.floor((now - hideEndsAt) / interval) + 1;
+    const next = hideEndsAt + index * interval;
+    return next < endsAt ? next : null;
+  }
+
+  function clearRadioMarkers() {
+    for (const marker of state.radioMarkers.values()) marker.remove();
+    state.radioMarkers.clear();
+  }
+
+  function radioChipText(win, now) {
+    if (win) return `SIGNAL ACTIF · ${Math.max(1, Math.ceil(win.remaining / 1000))} s`;
+    const next = nextRadioAt(now);
+    return next ? `PROCHAIN SIGNAL · ${fmtClock(next - now)}` : '';
+  }
+
+  function syncRadioMarkers(now = Date.now()) {
+    const me = self();
+    const canHunt = Boolean(me && me.role === 'hunter' && me.status === 'active'
+      && state.room?.phase === 'game');
+    const win = canHunt ? radioWindow(now) : null;
+    const chip = el('radio-chip');
+    const label = el('radio-chip-label');
+
+    if (chip) {
+      const chaseStarted = Boolean(state.room?.hideEndsAt && now >= state.room.hideEndsAt);
+      const visible = canHunt && chaseStarted;
+      chip.classList.toggle('hidden', !visible);
+      chip.classList.toggle('is-active', Boolean(win));
+      if (label && visible) label.textContent = radioChipText(win, now);
+    }
+
+    const map = state.map;
+    if (!map || !win) {
+      clearRadioMarkers();
+      state.radio.index = null;
+      return;
+    }
+
+    const wanted = new Map();
+    for (const player of state.players.values()) {
+      if (player.role !== 'fugitive' || player.status !== 'active') continue;
+      if (!validLngLat(player.lng, player.lat)) continue;
+      wanted.set(player.id, player);
+    }
+
+    for (const [id, player] of wanted) {
+      let marker = state.radioMarkers.get(id);
+      if (!marker) {
+        const element = document.createElement('div');
+        element.className = 'gh-radio-marker';
+        element.innerHTML = '<span class="gh-radio-ring"></span><span class="gh-radio-dot"></span><span class="gh-radio-label"></span>';
+        marker = new maplibregl.Marker({ element, anchor: 'left' })
+          .setLngLat([player.lng, player.lat])
+          .addTo(map);
+        state.radioMarkers.set(id, marker);
+      } else {
+        marker.setLngLat([player.lng, player.lat]);
+      }
+      const tag = marker.getElement()?.querySelector('.gh-radio-label');
+      if (tag) tag.textContent = `SIGNAL · ${shortName(player.name)}`;
+    }
+
+    for (const [id, marker] of [...state.radioMarkers]) {
+      if (wanted.has(id)) continue;
+      marker.remove();
+      state.radioMarkers.delete(id);
+    }
+
+    if (state.radio.index !== win.index) {
+      state.radio.index = win.index;
+      addLog('Signal radio : position des fugitifs détectée.', 'strong');
+      toast('Signal radio reçu. Position des fugitifs révélée 12 s.', 'info', 4000);
+      beep(1040, 0.06);
+      setTimeout(() => beep(1320, 0.06), 110);
+      vibrate([30, 40, 30]);
+    }
+  }
+
   function startRound() {
     if (!isHost() || !state.room || state.room.phase !== 'lobby') return;
     const check = readiness();
@@ -2103,6 +2235,9 @@
     if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
     state.logs = [];
     state.extraction = { since: null, validated: false, pointId: null };
+    state.extractionRevealed = false;
+    state.radio.index = null;
+    clearRadioMarkers();
     state.endScheduled = false;
     state.completionScheduled = false;
     state.fallbackAnnounce = false;
@@ -2230,8 +2365,14 @@
     if (scan) scan.disabled = !(canAct && me.role === 'hunter');
     if (qr) qr.disabled = !(canAct && me.role === 'fugitive');
 
+    if (state.extractionRevealed !== !hiding) {
+      state.extractionRevealed = !hiding;
+      syncExtractionMarkers();
+    }
+
     updateExtractionDisplay(now);
     updateGameHint(now, hiding, remaining);
+    syncRadioMarkers(now);
   }
 
   function updateGameHint(now, hiding, remaining) {
@@ -2480,6 +2621,10 @@
     state.isHost = state.room.hostId === state.playerId;
     if (state.isHost) { persistRoomRecord(); persistAllPlayers(); }
     state.extraction.since = null;
+    state.extractionRevealed = false;
+    state.radio.index = null;
+    clearRadioMarkers();
+    el('radio-chip')?.classList.add('hidden');
     stopScanner();
     closeModal('scan-modal');
     closeModal('qr-modal');
@@ -2556,6 +2701,10 @@
     state.endScheduled = false;
     state.completionScheduled = false;
     state.announcedChase = false;
+    state.extractionRevealed = false;
+    state.radio.index = null;
+    clearRadioMarkers();
+    el('radio-chip')?.classList.add('hidden');
     state.logs = [];
     state.extraction = { since: null, validated: false, pointId: null };
     closeModal('status-modal');
