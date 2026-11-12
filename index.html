@@ -41,7 +41,7 @@
   </script>
 
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.9.0/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="style.css?v=2" />
+  <link rel="stylesheet" href="style.css?v=3" />
 </head>
 
 <body>
@@ -53,12 +53,6 @@
       <div id="map-loading" class="map-loading">
         <span class="spinner" aria-hidden="true"></span>
         <span class="mono">CARTE 3D</span>
-      </div>
-
-      <div class="map-credit mono">
-        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>
-        <span>·</span>
-        <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>
       </div>
 
       <div id="pick-banner" class="pick-banner hidden">
@@ -97,10 +91,6 @@
           <span id="top-room-code" class="mono">------</span>
           <i data-lucide="copy" aria-hidden="true"></i>
         </button>
-        <button id="btn-mode" class="mode-pill" type="button" aria-label="Configurer le temps réel">
-          <span id="mode-dot" class="mode-dot"></span>
-          <span id="mode-label">DÉMO</span>
-        </button>
         <button id="btn-settings" class="icon-button" type="button" aria-label="Ouvrir les réglages">
           <i data-lucide="settings" aria-hidden="true"></i>
         </button>
@@ -108,7 +98,14 @@
     </header>
 
     <section id="sheet" class="sheet" aria-label="Interface de jeu">
-      <div class="sheet-handle" aria-hidden="true"></div>
+      <button
+        id="sheet-handle"
+        class="sheet-handle"
+        type="button"
+        aria-label="Réduire le panneau"
+        aria-expanded="true"
+        aria-controls="sheet-scroll"
+      ></button>
       <div id="sheet-scroll" class="sheet-scroll">
 
         <!-- ACCUEIL -->
@@ -592,6 +589,6 @@
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

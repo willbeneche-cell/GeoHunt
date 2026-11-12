@@ -19,6 +19,7 @@
   const PRESENCE_TTL_MS = 20_000;
   const HOST_GRACE_MS = 5_000;
   const TICK_MS = 250;
+  const SHEET_PEEK_PX = 58;
   const RADII = [300, 500, 800, 1200, 2000];
   const DURATIONS = [10, 15, 20, 30];
   const EMPTY_FC = { type: 'FeatureCollection', features: [] };
@@ -186,6 +187,7 @@
     extractionMarkers: [],
     centerMarker: null,
     picking: false,
+    sheet: { collapsed: false, drag: null },
     extraction: { since: null, validated: false },
     present: { lastAt: 0 },
     timers: { presence: null, join: null, hello: null, tick: null },
@@ -1046,12 +1048,12 @@
         const isNew = !state.players.has(player.id);
         mergePlayers([player]);
         playerPlaced(player);
-        if (isNew) {
-          addLog(`${player.name} a rejoint le salon.`);
-          if (state.view === 'lobby') renderLobby();
-          if (state.view === 'game') renderGameStatic();
-        }
+        if (isNew) addLog(`${player.name} a rejoint le salon.`);
         ensureHost();
+        syncMarkers();
+        if (state.view === 'lobby') renderLobby();
+        if (state.view === 'game') renderGameStatic();
+        if (isHost() && isNew) broadcastRoomState();
         return;
       }
 
@@ -1133,14 +1135,27 @@
     }
   }
 
-  function handlePresenceSync(presenceState) {
-    if (!state.room) return;
+  function presenceSnapshot(presenceState) {
     const incoming = [];
     for (const entries of Object.values(presenceState || {})) {
       for (const entry of entries || []) {
         if (entry?.id) incoming.push(entry);
       }
     }
+    return incoming;
+  }
+
+  function refreshPresenceUi({ broadcast = false } = {}) {
+    ensureHost();
+    syncMarkers();
+    if (state.view === 'lobby') renderLobby();
+    if (state.view === 'game') renderGameStatic();
+    if (broadcast && isHost()) broadcastRoomState();
+  }
+
+  function absorbPresence(entries, { removeMissing = false, broadcast = false } = {}) {
+    if (!state.room) return;
+    const incoming = (entries || []).filter((entry) => entry?.id);
     const previous = new Set(state.players.keys());
     mergePlayers(incoming);
     for (const raw of incoming) {
@@ -1151,13 +1166,39 @@
       }
       playerPlaced(player);
     }
-    ensureHost();
-    syncMarkers();
-    if (state.view === 'lobby') renderLobby();
-    if (state.view === 'game') {
-      renderTeam();
-      updateGameDynamic();
+    if (removeMissing) {
+      const present = new Set(incoming.map((entry) => String(entry.id)));
+      for (const [id, player] of state.players) {
+        if (id === state.playerId || present.has(id)) continue;
+        state.players.delete(id);
+        addLog(`${player.name} a quitté le salon.`);
+      }
     }
+    refreshPresenceUi({ broadcast });
+  }
+
+  function handlePresenceSync(presenceState) {
+    absorbPresence(presenceSnapshot(presenceState), { removeMissing: true, broadcast: true });
+  }
+
+  function handlePresenceJoin(entries) {
+    if (!state.room || !Array.isArray(entries) || !entries.length) return;
+    absorbPresence(entries, { broadcast: true });
+  }
+
+  function handlePresenceLeave(entries) {
+    if (!state.room || !Array.isArray(entries)) return;
+    let changed = false;
+    for (const entry of entries) {
+      if (!entry?.id || entry.id === state.playerId) continue;
+      const player = state.players.get(entry.id);
+      if (!player) continue;
+      state.players.delete(entry.id);
+      addLog(`${player.name} a quitté le salon.`);
+      changed = true;
+    }
+    if (!changed) return;
+    refreshPresenceUi({ broadcast: true });
   }
 
   function createLocalTransport(code) {
@@ -1229,6 +1270,12 @@
     });
     channel.on('presence', { event: 'sync' }, () => {
       if (!closed) handlePresenceSync(channel.presenceState());
+    });
+    channel.on('presence', { event: 'join' }, ({ newPresences }) => {
+      if (!closed) handlePresenceJoin(newPresences);
+    });
+    channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+      if (!closed) handlePresenceLeave(leftPresences);
     });
     channel.subscribe((status) => {
       if (closed) return;
@@ -1399,10 +1446,6 @@
         accuracy: state.gps?.accuracy
       });
       state.players.set(me.id, me);
-      const transport = await openTransport(code);
-      state.transport = transport;
-      state.transportKind = transport.kind;
-      await transport.connect();
       state.room = {
         code,
         hostId: state.playerId,
@@ -1419,6 +1462,10 @@
         endedAt: null
       };
       state.isHost = true;
+      const transport = await openTransport(code);
+      state.transport = transport;
+      state.transportKind = transport.kind;
+      await transport.connect();
       state.connection = 'connected';
       startPresenceLoop();
       document.body.dataset.role = state.role;
@@ -1494,14 +1541,14 @@
         state.joinRejecter = reject;
         state.timers.join = setTimeout(() => {
           reject(new Error('Aucun salon trouvé avec ce code. Vérifiez le code et que l’hôte est en ligne.'));
-        }, 5_000);
+        }, 8_000);
         const hello = () => transport.send({
           type: 'hello',
           player: selfPayload(),
           roomCode: code
         });
         hello();
-        state.timers.hello = setInterval(hello, 1_100);
+        state.timers.hello = setInterval(hello, 900);
       });
 
       startPresenceLoop();
@@ -2523,10 +2570,6 @@
   function updateModeUi() {
     const supabase = state.mode === 'supabase';
     const error = supabase && state.connection === 'error';
-    const modeDot = el('mode-dot');
-    if (modeDot) modeDot.className = `mode-dot${error ? ' is-error' : supabase ? ' is-live' : ''}`;
-    const label = el('mode-label');
-    if (label) label.textContent = error ? 'HORS LIGNE' : supabase ? 'SUPABASE' : 'DÉMO';
 
     const settingsDot = el('settings-status-dot');
     if (settingsDot) settingsDot.className = `status-dot${error ? ' is-error' : supabase ? ' is-ok' : ' is-waiting'}`;
@@ -2831,6 +2874,100 @@
   }
 
   /* ------------------------------------------------------------------------
+     Tiroir mobile
+     ------------------------------------------------------------------------ */
+
+  function sheetCurrentOffset(sheet) {
+    try {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(sheet).transform);
+      return Number.isFinite(matrix.m42) ? matrix.m42 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function setSheetCollapsed(collapsed, { keepOffset = false } = {}) {
+    const sheet = el('sheet');
+    if (!sheet) return;
+    const handle = el('sheet-handle');
+    const scroll = el('sheet-scroll');
+    const next = window.matchMedia('(min-width: 1024px)').matches ? false : Boolean(collapsed);
+    if (!keepOffset) sheet.style.removeProperty('--sheet-y');
+    sheet.classList.toggle('is-collapsed', next);
+    state.sheet.collapsed = next;
+    if (handle) {
+      handle.setAttribute('aria-expanded', String(!next));
+      handle.setAttribute('aria-label', next ? 'Agrandir le panneau' : 'Réduire le panneau');
+    }
+    if (scroll) scroll.inert = next;
+  }
+
+  function beginSheetDrag(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (window.matchMedia('(min-width: 1024px)').matches) return;
+    const sheet = el('sheet');
+    const handle = el('sheet-handle');
+    if (!sheet || !handle) return;
+    const rect = sheet.getBoundingClientRect();
+    const maxHide = Math.max(0, rect.height - SHEET_PEEK_PX);
+    if (maxHide < 24) return;
+    const startOffset = Math.min(maxHide, Math.max(0, sheetCurrentOffset(sheet)));
+    state.sheet.drag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startOffset,
+      offset: startOffset,
+      maxHide,
+      moved: false
+    };
+    sheet.classList.add('is-dragging');
+    sheet.style.setProperty('--sheet-y', `${startOffset}px`);
+    try { handle.setPointerCapture(event.pointerId); } catch { /* pointeur non capturable */ }
+  }
+
+  function moveSheetDrag(event) {
+    const drag = state.sheet.drag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const delta = event.clientY - drag.startY;
+    if (Math.abs(delta) > 4) drag.moved = true;
+    drag.offset = Math.min(drag.maxHide, Math.max(0, drag.startOffset + delta));
+    el('sheet')?.style.setProperty('--sheet-y', `${drag.offset}px`);
+  }
+
+  function endSheetDrag(event) {
+    const drag = state.sheet.drag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const sheet = el('sheet');
+    const threshold = Math.min(90, drag.maxHide * 0.22);
+    const movedBy = drag.offset - drag.startOffset;
+    const startedCollapsed = drag.startOffset > drag.maxHide / 2;
+    const shouldCollapse = drag.moved
+      ? startedCollapsed
+        ? movedBy > -threshold
+        : movedBy > threshold
+      : !state.sheet.collapsed;
+    state.sheet.drag = null;
+    try { el('sheet-handle')?.releasePointerCapture(event.pointerId); } catch { /* déjà libéré */ }
+    if (!sheet) return;
+    const target = shouldCollapse ? drag.maxHide : 0;
+    sheet.classList.remove('is-dragging');
+    sheet.style.setProperty('--sheet-y', `${target}px`);
+    setSheetCollapsed(shouldCollapse, { keepOffset: true });
+    setTimeout(() => {
+      if (state.sheet.drag || sheet.classList.contains('is-dragging')) return;
+      sheet.style.removeProperty('--sheet-y');
+    }, 320);
+  }
+
+  function cancelSheetDrag(event) {
+    const drag = state.sheet.drag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    state.sheet.drag = null;
+    setSheetCollapsed(state.sheet.collapsed);
+    try { el('sheet-handle')?.releasePointerCapture(event.pointerId); } catch { /* déjà libéré */ }
+  }
+
+  /* ------------------------------------------------------------------------
      Événements & démarrage
      ------------------------------------------------------------------------ */
 
@@ -2846,10 +2983,19 @@
       event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     });
 
+    const sheetHandle = el('sheet-handle');
+    sheetHandle?.addEventListener('pointerdown', beginSheetDrag);
+    sheetHandle?.addEventListener('pointermove', moveSheetDrag);
+    sheetHandle?.addEventListener('pointerup', endSheetDrag);
+    sheetHandle?.addEventListener('pointercancel', cancelSheetDrag);
+    sheetHandle?.addEventListener('click', (event) => {
+      if (event.detail !== 0) return;
+      setSheetCollapsed(!state.sheet.collapsed);
+    });
+
     el('btn-home')?.addEventListener('click', requestLeave);
     el('btn-room-code')?.addEventListener('click', copyRoomCode);
     el('lobby-code-display')?.addEventListener('click', copyRoomCode);
-    el('btn-mode')?.addEventListener('click', openSettings);
     el('mode-note')?.addEventListener('click', openSettings);
     el('btn-settings')?.addEventListener('click', openSettings);
     el('form-supabase')?.addEventListener('submit', saveSupabaseConfig);

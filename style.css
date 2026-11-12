@@ -155,32 +155,6 @@ svg {
   to { transform: rotate(360deg); }
 }
 
-.map-credit {
-  position: fixed;
-  top: calc(var(--topbar-h) + 10px);
-  left: 14px;
-  z-index: 19;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.88);
-  color: var(--muted-dim);
-  font-size: 8px;
-  letter-spacing: 0.02em;
-  backdrop-filter: blur(8px);
-}
-
-.map-credit a {
-  text-decoration: none;
-}
-
-.map-credit a:hover {
-  color: var(--ink);
-}
-
 .map-controls {
   position: fixed;
   top: calc(var(--topbar-h) + 14px);
@@ -397,43 +371,6 @@ svg {
   color: var(--muted-dim);
 }
 
-.mode-pill {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 34px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.mode-pill:hover {
-  border-color: var(--line-strong);
-  background: var(--surface);
-}
-
-.mode-dot {
-  width: 5px;
-  height: 5px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--muted-dim);
-}
-
-.mode-dot.is-live {
-  background: var(--ink);
-}
-
-.mode-dot.is-error {
-  background: var(--danger);
-}
-
 .icon-button {
   width: 34px;
   height: 34px;
@@ -464,7 +401,9 @@ svg {
    -------------------------------------------------------------------------- */
 
 .sheet {
+  --sheet-y: 0px;
   position: fixed;
+  transform: translateY(var(--sheet-y));
   transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
   left: 0;
   right: 0;
@@ -480,13 +419,52 @@ svg {
   overflow: hidden;
 }
 
+.sheet.is-collapsed {
+  --sheet-y: calc(100% - 58px);
+}
+
+.sheet.is-dragging {
+  transition: none;
+}
+
 .sheet-handle {
   flex: none;
+  width: 64px;
+  height: 24px;
+  margin: 1px auto 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.sheet-handle::before {
+  content: '';
   width: 34px;
   height: 4px;
-  margin: 8px auto 2px;
   border-radius: 2px;
   background: var(--line-strong);
+  transition: background 0.15s ease;
+}
+
+.sheet-handle:active,
+.sheet.is-dragging .sheet-handle {
+  cursor: grabbing;
+}
+
+.sheet-handle:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.sheet-handle:focus-visible::before {
+  background: var(--ink);
 }
 
 .sheet-scroll {
@@ -2414,10 +2392,6 @@ body[data-role='fugitive'] .fugitive-only {
     gap: 4px;
   }
 
-  .mode-pill {
-    padding: 0 7px;
-  }
-
   .sheet-scroll {
     padding-left: 15px;
     padding-right: 15px;
@@ -2467,6 +2441,10 @@ body[data-role='fugitive'] .fugitive-only {
     box-shadow: var(--shadow-card);
   }
 
+  .sheet.is-collapsed {
+    --sheet-y: 0px;
+  }
+
   #app.is-picking .sheet {
     transform: none;
   }
@@ -2485,11 +2463,6 @@ body[data-role='fugitive'] .fugitive-only {
 
   .lead {
     font-size: 13px;
-  }
-
-  .map-credit {
-    top: calc(var(--topbar-h) + 12px);
-    left: 450px;
   }
 
   .map-controls {
@@ -2524,10 +2497,6 @@ body[data-role='fugitive'] .fugitive-only {
     width: 430px;
     top: 94px;
     bottom: 32px;
-  }
-
-  .map-credit {
-    left: 490px;
   }
 
   .pick-banner {
